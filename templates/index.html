@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.27.0/plotly.min.js"></script>
+    <title>Meraki Heatmap</title>
+  </head>
+  <body>
+    <nav class="navbar navbar-expand-md navbar-dark bg-dark fixed-top">
+      <a class="navbar-brand" href="#">Meraki Heatmap</a>
+      <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarsExampleDefault"
+        aria-controls="navbarsExampleDefault" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navbarsExampleDefault">
+        <ul class="navbar-nav mr-auto">
+          <li class="nav-item active">
+            <a class="nav-link" href="#">Home <span class="sr-only">(current)</span></a>
+          </li>
+        </ul>
+        <div class="d-flex align-items-center flex-wrap">
+          <div class="mr-2 mb-2 mb-md-0">
+            <form method="POST" action="/api-key" class="mb-0 d-flex align-items-center">
+              <div class="input-group input-group-sm" style="max-width: 280px;">
+                <input type="password" class="form-control" id="apiKey" name="api_key"
+                  placeholder="Meraki API Key"
+                  {% if api_key_set %}value="••••••••••••••••"{% endif %}>
+                <div class="input-group-append">
+                  <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+              </div>
+            </form>
+          </div>
+          {% if api_key_set %}
+            <div class="mr-2 mb-2 mb-md-0 small text-success">&#10003; Key Set</div>
+            <div class="mr-2 mb-2 mb-md-0">
+              <a href="/api-key/clear" class="btn btn-outline-light btn-sm py-0 px-2">Clear</a>
+            </div>
+          {% endif %}
+          <div class="mr-2 mb-2 mb-md-0">
+            <form method="POST" action="/select-org" class="mb-0">
+              <select name="org_id" class="form-control form-control-sm org-select" style="max-width: 280px;" {% if not organisations %}disabled{% endif %}>
+                {% if organisations %}
+                  <option value="" disabled {% if not selected_org %}selected{% endif %}>Select Organisation</option>
+                  {% for org in organisations %}
+                    <option value="{{ org.id }}"
+                      data-name="{{ org.name }}"
+                      {% if selected_org and selected_org.id == org.id %}selected{% endif %}>
+                      {{ org.name }}
+                    </option>
+                  {% endfor %}
+                {% else %}
+                  <option value="" selected>Set API key to load organisations</option>
+                {% endif %}
+              </select>
+              <input type="hidden" name="org_name" id="org_name" value="{% if selected_org %}{{ selected_org.name }}{% endif %}">
+            </form>
+          </div>
+          <div class="mb-2 mb-md-0">
+            <form method="POST" action="/select-floor" class="mb-0">
+              <select name="floor_id" class="form-control form-control-sm floor-select" style="max-width: 280px;" {% if not floors %}disabled{% endif %}>
+                {% if floors %}
+                  <option value="" disabled {% if not selected_floor %}selected{% endif %}>Select Floor</option>
+                  {% for floor in floors %}
+                    <option value="{{ floor.floorPlanId }}"
+                      data-name="{{ floor.name }}"
+                      data-network="{{ floor.networkId }}"
+                      {% if selected_floor and selected_floor.id == floor.floorPlanId %}selected{% endif %}>
+                      {{ floor.name }} - {{ floor.networkName }}
+                    </option>
+                  {% endfor %}
+                {% elif selected_org %}
+                  <option value="" selected>No floor plans found</option>
+                {% else %}
+                  <option value="" selected>Select organisation first</option>
+                {% endif %}
+              </select>
+              <input type="hidden" name="floor_name" id="floor_name" value="{% if selected_floor %}{{ selected_floor.name }}{% endif %}">
+              <input type="hidden" name="network_id" id="network_id" value="{% if selected_floor %}{{ selected_floor.networkId }}{% endif %}">
+            </form>
+          </div>
+        </div>
+      </div>
+    </nav>
+
+    <main role="main" class="container-fluid" style="margin-top: 80px;">
+      <div class="mb-4">
+        <h1>Meraki Wi-Fi Heatmap</h1>
+        <p class="lead">Predictive RSSI heatmap based on AP location and transmit power.</p>
+      </div>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }}" role="alert">{{ message }}</div>
+        {% endfor %}
+      {% endwith %}
+
+      <div class="mb-4">
+        <div class="card">
+          <div class="card-header">
+            <h5 class="mb-0">Heatmap
+              {% if selected_floor %}<small class="text-muted ml-2">{{ selected_floor.name }}</small>{% endif %}
+            </h5>
+          </div>
+          <div class="card-body">
+            <div class="mb-3">
+              <div class="small text-muted mb-1">Generate Heatmap</div>
+              <div class="d-flex align-items-center flex-wrap">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Generate Heatmap by frequency">
+                  <button type="button" class="btn btn-outline-primary" id="generate-24"
+                    {% if not (floor_image and floor_image.url and aps) %}disabled{% endif %}>2.4Ghz</button>
+                  <button type="button" class="btn btn-outline-primary" id="generate-5"
+                    {% if not (floor_image and floor_image.url and aps) %}disabled{% endif %}>5Ghz</button>
+                </div>
+                <label for="rssi-cutoff" class="small text-muted mb-0 ml-3 mr-2">
+                  RSSI: <span id="rssi-cutoff-value">-70</span> dBm
+                </label>
+                <input id="rssi-cutoff" type="range" class="custom-range mb-0"
+                  style="width: 160px;"
+                  min="-90" max="-30" step="1" value="-70"
+                  {% if not (floor_image and floor_image.url and aps) %}disabled{% endif %}>
+              </div>
+            </div>
+
+            <div class="d-flex align-items-center justify-content-center bg-light" style="min-height: 320px;">
+              {% if floor_image and floor_image.url %}
+                <div id="plot-container" class="w-100" style="max-width: 100%; min-height: 320px; position: relative;"
+                  data-floor-width="{{ floor_image.width }}" data-floor-height="{{ floor_image.height }}">
+                  <div id="plot24" style="width: 100%; height: 100%; display: none;"></div>
+                  <div id="plot5" style="width: 100%; height: 100%; display: none;"></div>
+                  <div id="heatmap-hint" class="h-100 d-flex align-items-center justify-content-center text-muted" style="position: absolute; inset: 0;">
+                    Choose 2.4Ghz or 5Ghz to render the heatmap.
+                  </div>
+                </div>
+              {% else %}
+                <svg id="heatmap-svg" width="100%" height="500"
+                  xmlns="http://www.w3.org/2000/svg"
+                  style="border: 1px solid #dee2e6; background: #fff;">
+                  <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle"
+                    fill="#adb5bd" font-size="16">
+                    Fetch APs to load the floor plan
+                  </text>
+                </svg>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mb-4">
+        <div class="card">
+          <div class="card-header">
+            <h5 class="mb-0">Access Points</h5>
+          </div>
+          <div class="card-body p-0" style="max-height: 320px; overflow-y: auto;">
+            {% if aps %}
+              <table class="table table-sm table-hover mb-0">
+                <thead class="thead-light">
+                  <tr>
+                    <th>Name</th>
+                    <th>5Ghz Ch</th>
+                    <th>5Ghz Tx (dBm)</th>
+                    <th>2.4Ghz Ch</th>
+                    <th>2.4Ghz Tx (dBm)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for ap in aps %}
+                    <tr>
+                      <td>{{ ap.name }}</td>
+                      <td>{{ ap.channel5 }}</td>
+                      <td>{{ ap.txPower5 }}</td>
+                      <td>{{ ap.channel24 }}</td>
+                      <td>{{ ap.txPower24 }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% elif selected_floor %}
+              <div class="p-3 text-muted">Click "Fetch APs" to load access points for <strong>{{ selected_floor.name }}</strong>.</div>
+            {% else %}
+              <div class="p-3 text-muted">Select a floor plan to enable AP fetch.</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      function autoSizeSelect(select) {
+        var longestLabel = '';
+        Array.prototype.forEach.call(select.options, function(option) {
+          if (option.text.length > longestLabel.length) {
+            longestLabel = option.text;
+          }
+        });
+
+        if (longestLabel) {
+          var canvas = document.createElement('canvas');
+          var ctx = canvas.getContext('2d');
+          if (ctx) {
+            var font = window.getComputedStyle(select).font;
+            ctx.font = font;
+            var textWidth = Math.ceil(ctx.measureText(longestLabel).width);
+            select.style.width = (textWidth + 56) + 'px';
+          }
+        }
+      }
+
+      document.querySelectorAll('.org-select').forEach(function(select) {
+        autoSizeSelect(select);
+        select.addEventListener('change', function() {
+          var option = this.options[this.selectedIndex];
+          var form = this.closest('form');
+          form.querySelector('#org_name').value = option.dataset.name || '';
+          form.submit();
+        });
+      });
+
+      document.querySelectorAll('.floor-select').forEach(function(select) {
+        autoSizeSelect(select);
+
+        select.addEventListener('change', function() {
+          var option = this.options[this.selectedIndex];
+          var form = this.closest('form');
+          form.querySelector('#floor_name').value = option.dataset.name || '';
+          form.querySelector('#network_id').value = option.dataset.network || '';
+          form.submit();
+        });
+      });
+
+      {% if floor_image and floor_image.url and aps %}
+      (function() {
+        var plotContainer = document.getElementById('plot-container');
+        var cutoffSlider = document.getElementById('rssi-cutoff');
+        var cutoffValue = document.getElementById('rssi-cutoff-value');
+        var floor = {
+          width: {{ floor_image.width }},
+          height: {{ floor_image.height }},
+          url: '/floor-image'
+        };
+        var aps = {{ aps | tojson }};
+        var autoRenderBand = '{{ auto_render_band or "" }}';
+        var gridSize = 90;
+        var activeBand = null;
+
+        function linspace(start, end, n) {
+          if (n <= 1) {
+            return [start];
+          }
+          var step = (end - start) / (n - 1);
+          var values = [];
+          for (var i = 0; i < n; i += 1) {
+            values.push(start + step * i);
+          }
+          return values;
+        }
+
+        function buildRssiGrid(band, cutoff) {
+          var exponent = band === '2.4' ? 3.83 : 3.89;
+          var intercept = band === '2.4' ? -31 : -41;
+          var xVals = linspace(0, floor.width, gridSize);
+          var yVals = linspace(0, floor.height, gridSize);
+          var zVals = [];
+
+          for (var yIdx = 0; yIdx < yVals.length; yIdx += 1) {
+            var py = yVals[yIdx];
+            var row = [];
+            for (var xIdx = 0; xIdx < xVals.length; xIdx += 1) {
+              var px = xVals[xIdx];
+              var minDist2 = Number.POSITIVE_INFINITY;
+
+              for (var apIdx = 0; apIdx < aps.length; apIdx += 1) {
+                var ap = aps[apIdx];
+                var dx = (ap.x || 0) - px;
+                var dy = (ap.y || 0) - py;
+                var d2 = dx * dx + dy * dy;
+                if (d2 < minDist2) {
+                  minDist2 = d2;
+                }
+              }
+
+              var distance = Math.sqrt(minDist2 || 0) || 0.1;
+              var rssi = intercept - 10 * exponent * Math.log10(distance);
+              row.push(rssi < cutoff ? null : rssi);
+            }
+            zVals.push(row);
+          }
+
+          return { x: xVals, y: yVals, z: zVals };
+        }
+
+        function apTrace() {
+          return {
+            type: 'scatter',
+            mode: 'markers+text',
+            x: aps.map(function(ap) { return ap.x; }),
+            y: aps.map(function(ap) { return ap.y; }),
+            text: aps.map(function(ap) { return ap.name; }),
+            textposition: 'top center',
+            marker: {
+              color: '#dc3545',
+              size: 9,
+              line: { color: '#ffffff', width: 1 }
+            },
+            textfont: { color: '#212529', size: 11 },
+            hovertemplate: '<b>%{text}</b><br>x: %{x:.1f}<br>y: %{y:.1f}<extra></extra>',
+            name: 'Access Points',
+            showlegend: false
+          };
+        }
+
+        function tickStep(maxValue) {
+          if (maxValue <= 50) {
+            return 5;
+          }
+          if (maxValue <= 100) {
+            return 10;
+          }
+          if (maxValue <= 200) {
+            return 20;
+          }
+          return 50;
+        }
+
+        function buildTicks(maxValue, step) {
+          var ticks = [];
+          for (var value = 0; value <= maxValue; value += step) {
+            ticks.push(value);
+          }
+          if (ticks[ticks.length - 1] !== maxValue) {
+            ticks.push(maxValue);
+          }
+          return ticks;
+        }
+
+        function makeLayout(title) {
+          var xStep = tickStep(floor.width);
+          var yStep = tickStep(floor.height);
+
+          return {
+            title: { text: title, font: { size: 14 } },
+            autosize: true,
+            margin: { t: 40, b: 48, l: 58, r: 60 },
+            paper_bgcolor: 'rgba(0,0,0,0)',
+            plot_bgcolor: 'rgba(0,0,0,0)',
+            xaxis: {
+              range: [0, floor.width],
+              title: { text: 'Width (m)' },
+              showgrid: true,
+              gridcolor: 'rgba(0,0,0,0.08)',
+              zeroline: false,
+              showline: true,
+              linecolor: '#6c757d',
+              mirror: false,
+              ticks: 'outside',
+              tick0: 0,
+              dtick: xStep,
+              tickformat: '.0f',
+              tickfont: { color: '#495057' },
+              color: '#495057',
+              visible: true,
+              constrain: 'domain',
+              fixedrange: true
+            },
+            yaxis: {
+              range: [floor.height, 0],
+              title: { text: 'Height (m)' },
+              showgrid: true,
+              gridcolor: 'rgba(0,0,0,0.08)',
+              zeroline: false,
+              showline: true,
+              linecolor: '#6c757d',
+              mirror: false,
+              ticks: 'outside',
+              tick0: 0,
+              dtick: yStep,
+              tickformat: '.0f',
+              tickfont: { color: '#495057' },
+              color: '#495057',
+              visible: true,
+              scaleanchor: 'x',
+              scaleratio: 1,
+              fixedrange: true
+            },
+            images: [
+              {
+                source: floor.url,
+                xref: 'x domain',
+                yref: 'y domain',
+                x: 0,
+                y: 1,
+                sizex: 1,
+                sizey: 1,
+                sizing: 'stretch',
+                xanchor: 'left',
+                yanchor: 'top',
+                layer: 'below',
+                opacity: 1
+              }
+            ],
+            coloraxis: {
+              colorscale: [
+                [0, '#d73027'],
+                [0.25, '#fc8d59'],
+                [0.5, '#fee08b'],
+                [0.75, '#d9ef8b'],
+                [1, '#1a9850']
+              ],
+              cmin: -90,
+              cmax: -30,
+              colorbar: { title: 'RSSI dBm' }
+            }
+          };
+        }
+
+        function renderHeatmap(band) {
+          var cutoff = parseInt(cutoffSlider.value, 10);
+          var targetId = band === '2.4' ? 'plot24' : 'plot5';
+          var otherId = band === '2.4' ? 'plot5' : 'plot24';
+          var target = document.getElementById(targetId);
+          var other = document.getElementById(otherId);
+          var hint = document.getElementById('heatmap-hint');
+          var grid = buildRssiGrid(band, cutoff);
+          activeBand = band;
+
+          if (hint) {
+            hint.style.display = 'none';
+          }
+          if (other) {
+            other.style.display = 'none';
+          }
+          if (target) {
+            target.style.display = 'block';
+          }
+
+          Plotly.newPlot(targetId, [
+            {
+              type: 'heatmap',
+              x: grid.x,
+              y: grid.y,
+              z: grid.z,
+              coloraxis: 'coloraxis',
+              opacity: 0.5,
+              hovertemplate: 'x: %{x:.1f}<br>y: %{y:.1f}<br>RSSI: %{z:.1f} dBm<extra></extra>'
+            },
+            apTrace()
+          ], makeLayout((band === '2.4' ? '2.4Ghz' : '5Ghz') + ' RSSI Heatmap'), {
+            responsive: true,
+            displayModeBar: false
+          });
+        }
+
+        function syncPlotSize() {
+          if (!plotContainer || !floor.width || !floor.height) {
+            return;
+          }
+
+          var widthPx = plotContainer.clientWidth;
+          if (!widthPx) {
+            return;
+          }
+
+          var heightPx = Math.max(320, Math.round(widthPx * (floor.height / floor.width)));
+          plotContainer.style.height = heightPx + 'px';
+
+          var activePlot = document.getElementById('plot24').style.display !== 'none'
+            ? document.getElementById('plot24')
+            : (document.getElementById('plot5').style.display !== 'none' ? document.getElementById('plot5') : null);
+
+          if (activePlot) {
+            Plotly.Plots.resize(activePlot);
+          }
+        }
+
+        var btn24 = document.getElementById('generate-24');
+        var btn5 = document.getElementById('generate-5');
+        if (btn24) {
+          btn24.addEventListener('click', function() {
+            renderHeatmap('2.4');
+          });
+        }
+        if (btn5) {
+          btn5.addEventListener('click', function() {
+            renderHeatmap('5');
+          });
+        }
+
+          if (cutoffSlider && cutoffValue) {
+            cutoffValue.textContent = cutoffSlider.value;
+            cutoffSlider.addEventListener('input', function() {
+              cutoffValue.textContent = cutoffSlider.value;
+              if (activeBand) {
+                renderHeatmap(activeBand);
+              }
+            });
+          }
+
+        syncPlotSize();
+        if (autoRenderBand === '5') {
+          renderHeatmap('5');
+        }
+        window.addEventListener('resize', syncPlotSize);
+      })();
+      {% endif %}
+    </script>
+  </body>
+</html>
