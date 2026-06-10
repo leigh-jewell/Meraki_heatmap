@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Added initial unit tests with pytest to provide some coverage
+- Add demo image to README.md
 - Moved top controls into the fixed navbar:
 	- Meraki API key input/save controls
 	- Organisation selector
